@@ -21,15 +21,14 @@ def downsample_image(image, factor=4):
     return np.array(pil_img) / 255.0
     
 
-def predict_autorreg(Llama_model, X, gt_length):
+def predict_autorreg(Llama_model, X, gt_length, prompts=None):
     # Print warning to user if gt_length is greater than X.size(1)
     if gt_length > X.size(1):
         print(f'Warning: gt_length ({gt_length}) is greater than X.size(1) ({X.size(1)}). Setting gt_length to X.size(1)')
         gt_length = X.size(1)
     # Get the ground truth portion of the sequence
     input_seq = X[:, :gt_length] # first gt_length vectors in seq. Shape is [bs, gt_length, feats_dim]
-    # First forward to initialize hidden and cell states of LSTM
-    pred = Llama_model(input_seq)
+    pred = Llama_model(input_seq, prompts)
     # Only care about the last prediction
     new_pred = pred[:, -1] # Shape is [bs, 1, feats_dim]
     new_pred = new_pred[:,None,:]
@@ -46,11 +45,11 @@ def predict_autorreg(Llama_model, X, gt_length):
     return final_prediction
 
 @torch.no_grad()
-def test_autorreg_epoch(Llama_model, diff_model, data_loader, device, lengths_to_test=[1, 5, 10, 20]):
+def test_autorreg_epoch(Llama_model, diff_model, data_loader, device, lengths_to_test=[1, 5, 10, 20], append_prompt=False):
     diff_model.eval()
     psnrs = [] # list of dicts, one for each batch. Each dict has keys = lengths_to_test, and values = list of psnrs for each sample in batch
     losses = []
-    for X, y, cond, _ in tqdm(data_loader):
+    for X, y, cond, prompts in tqdm(data_loader):
         # Compute gt images of this batch
         X, y, cond = X.to(device), y.to(device), cond.to(device)
         y = y[:, -1]
@@ -58,8 +57,11 @@ def test_autorreg_epoch(Llama_model, diff_model, data_loader, device, lengths_to
         batch_losses = { }
         batch_psnrs = { }
         for gt_length in lengths_to_test:
-            preds = predict_autorreg(Llama_model, X, gt_length=gt_length) # [bs, S, feats_dim], where S = 1+X.size(1)-gt_length
-            preds = preds[:, -1] # [bs, feats_dim]
+            if append_prompt:
+                all_preds = predict_autorreg(Llama_model, X, gt_length=gt_length, prompts=prompts)
+            else:
+                all_preds = predict_autorreg(Llama_model, X, gt_length=gt_length) # [bs, S, feats_dim], where S = 1+X.size(1)-gt_length
+            preds = all_preds[:, -1] # [bs, feats_dim]
             pred_ims = diffusion_model.to_img(diff_model, preds.view(X.size(0), 4, 64, 64), to_numpy=False) # [bs, 512, 512, 3] and values in [0, 1]
             # Compute loss in latent space
             loss = torch.mean((preds - y)**2, dim=1) # [bs]
@@ -78,7 +80,7 @@ def test_autorreg_epoch(Llama_model, diff_model, data_loader, device, lengths_to
     
     return losses, psnrs
 
-def visualize_reconstruction(llama_model, diff_model, test_data_loader, gt_length=20, sample_ids=[0, 1, 2, 3, 4, 5]):
+def visualize_reconstruction(Llama_model, diff_model, test_data_loader, gt_length=20, sample_ids=[0, 1, 2, 3, 4, 5], append_prompt=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     all_gt_imgs = []
@@ -88,11 +90,14 @@ def visualize_reconstruction(llama_model, diff_model, test_data_loader, gt_lengt
     # Iterate over sample_ids
     for sample_id in sample_ids:
         # Extract sample `sample_id` from test data loader
-        X, y, cond, prompt = test_data_loader.dataset[sample_id]
+        X, y, cond, prompts = test_data_loader.dataset[sample_id]
         X, cond = X.unsqueeze(0).to(device), cond.unsqueeze(0).to(device)
 
         gt_img = diffusion_model.to_img(diff_model, y[-1].view(1, 4, 64, 64).to(device))
-        all_preds = predict_autorreg(llama_model, X, gt_length=gt_length)
+        if append_prompt:
+            all_preds = predict_autorreg(Llama_model, X, gt_length=gt_length, prompts=prompts)
+        else:
+            all_preds = predict_autorreg(Llama_model, X, gt_length=gt_length)
         last_pred = all_preds[0, -1]  
         reshaped_latent = last_pred.view(1, 4, 64, 64).to(device)
         pred_img = diffusion_model.to_img(diff_model, reshaped_latent)
@@ -106,7 +111,7 @@ def visualize_reconstruction(llama_model, diff_model, test_data_loader, gt_lengt
         all_pred_imgs.append(pred_img_downsampled)
         
         # Construct caption and append
-        captions.append(f"Prompt: {prompt} | Top: Ground Truth, Bottom: Predicted")
+        captions.append(f"Prompt: {prompts} | Top: Ground Truth, Bottom: Predicted")
     
     # Concatenate ground truth and predicted images vertically for each sample
     # Then concatenate the results horizontally to form the grid
@@ -123,7 +128,7 @@ def visualize_reconstruction(llama_model, diff_model, test_data_loader, gt_lengt
     return images
 
 
-def visualize_mid_latents(Llama_model, diff_model, test_data_loader, num_initial_steps=20, sample_ids=[0, 1, 2, 3, 4, 5]):
+def visualize_mid_latents(Llama_model, diff_model, test_data_loader, num_initial_steps=20, sample_ids=[0, 1, 2, 3, 4, 5], append_prompt=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     all_gt_imgs = []
@@ -133,14 +138,17 @@ def visualize_mid_latents(Llama_model, diff_model, test_data_loader, num_initial
     # Iterate over sample_ids
     for sample_id in sample_ids:
         # Extract sample `sample_id` from test data loader
-        X, y, cond, prompt = test_data_loader.dataset[sample_id]
+        X, y, cond, prompts = test_data_loader.dataset[sample_id]
         X, cond = X.unsqueeze(0).to(device), cond.unsqueeze(0).to(device)
         try:
             gt_img = diffusion_model.to_img(diff_model, X[:,num_initial_steps,:].view(1, 4, 64, 64).to(device))
         except:
             gt_img = diffusion_model.to_img(diff_model, y[-1].view(1, 4, 64, 64).to(device))
-        preds = predict_autorreg(Llama_model, X, gt_length=num_initial_steps)
-        pred = preds[0,num_initial_steps]
+        if append_prompt:
+            all_preds = predict_autorreg(Llama_model, X, gt_length=num_initial_steps, prompts=prompts)
+        else:
+            all_preds = predict_autorreg(Llama_model, X, gt_length=num_initial_steps)
+        pred = all_preds[0,num_initial_steps]
         reshaped_latent = pred.view(1, 4, 64, 64).to(device)
         pred_img = diffusion_model.to_img(diff_model, reshaped_latent, to_numpy=True)
         
@@ -153,7 +161,7 @@ def visualize_mid_latents(Llama_model, diff_model, test_data_loader, num_initial
         all_pred_imgs.append(pred_img_downsampled)
         
         # Construct caption and append
-        captions.append(f"Prompt: {prompt} | Top: Ground Truth, Bottom: Predicted")
+        captions.append(f"Prompt: {prompts} | Top: Ground Truth, Bottom: Predicted")
 
     # Concatenate ground truth and predicted images vertically for each sample
     # Then concatenate the results horizontally to form the grid

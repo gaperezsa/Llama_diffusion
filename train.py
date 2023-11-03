@@ -12,13 +12,16 @@ import wandb
 ###### Train and Testing epochs ######
 
 @torch.enable_grad()
-def train_epoch(model, data_loader, optimizer, loss_function, device, superv_iters=19):
+def train_epoch(model, data_loader, optimizer, loss_function, device, superv_iters=1, append_prompt=False):
     model.train()
     total_loss = 0
-    for X, y, cond, _ in tqdm(data_loader, desc="Training", unit="batch"):
+    for X, y, cond, prompts in tqdm(data_loader, desc="Training", unit="batch"):
         X, y, cond = X.to(device), y.to(device), cond.to(device)
         optimizer.zero_grad()
-        predictions = model(X)
+        if append_prompt:
+            predictions = model(X, prompts)
+        else:
+            predictions = model(X)
         loss = loss_function(predictions[:, superv_iters:], y[:, superv_iters:])
         loss.backward()
         optimizer.step()
@@ -27,12 +30,15 @@ def train_epoch(model, data_loader, optimizer, loss_function, device, superv_ite
 
 
 @torch.no_grad()
-def test_epoch(model, data_loader, loss_function, device):
+def test_epoch(model, data_loader, loss_function, device, append_prompt=False):
     model.eval()
     total_loss = 0
-    for X, y, cond, _ in tqdm(data_loader, desc="Testing", unit="batch"):
+    for X, y, cond, prompts in tqdm(data_loader, desc="Testing", unit="batch"):
         X, y, cond = X.to(device), y.to(device), cond.to(device)
-        predictions = model(X) # predictions is of gt_lengthshape [bs, seq_len, feats_dim]
+        if append_prompt:
+            predictions = model(X, prompts)
+        else:
+            predictions = model(X)
         loss = loss_function(predictions, y)
         total_loss += loss.item()
     
@@ -76,11 +82,11 @@ def main(args):
     for epoch in range(args.epochs):
         # Training
         start = time.time()
-        train_loss = train_epoch(llama_model, train_data_loader, optimizer, loss_function, device, superv_iters=args.superv_iters)
+        train_loss = train_epoch(llama_model, train_data_loader, optimizer, loss_function, device, superv_iters=args.superv_iters, append_prompt=args.prompt_appended)
         end = time.time()
 
         # Val and Testing
-        val_loss = test_epoch(llama_model, val_data_loader, loss_function, device)
+        val_loss = test_epoch(llama_model, val_data_loader, loss_function, device, append_prompt=args.prompt_appended)
         #test_loss = test_epoch(llama_model, test_data_loader, loss_function, device)
 
         # Console logging
@@ -97,14 +103,14 @@ def main(args):
         if (epoch % args.ar_eval_freq == 0) or (epoch+1 == args.epochs): 
             # Visualization after each epoch
             for gt_length in tqdm(args.lengths_to_test, desc="Reconstructing and visualizing"):
-                images = eval_utils.visualize_reconstruction(llama_model, diff_model, visual_val_data_loader, gt_length=gt_length)
+                images = eval_utils.visualize_reconstruction(llama_model, diff_model, visual_val_data_loader, gt_length=gt_length, append_prompt=args.prompt_appended)
                 wandb.log({f"reconstruction_gt{gt_length}": images})
                 mid_images = eval_utils.visualize_mid_latents(llama_model, diff_model, visual_val_data_loader,gt_length)
                 wandb.log({f"reconstruction with access to {gt_length}gt, predicting {gt_length+1}": mid_images})
 
             # Compute error and PSNR when generating autorregressively
-            train_losses, train_psnrs = eval_utils.test_autorreg_epoch(llama_model, diff_model, visual_train_data_loader, device, lengths_to_test=args.lengths_to_test)
-            val_losses, val_psnrs = eval_utils.test_autorreg_epoch(llama_model, diff_model, visual_val_data_loader, device, lengths_to_test=args.lengths_to_test)
+            train_losses, train_psnrs = eval_utils.test_autorreg_epoch(llama_model, diff_model, visual_train_data_loader, device, lengths_to_test=args.lengths_to_test, append_prompt=args.prompt_appended)
+            val_losses, val_psnrs = eval_utils.test_autorreg_epoch(llama_model, diff_model, visual_val_data_loader, device, lengths_to_test=args.lengths_to_test, append_prompt=args.prompt_appended)
             # test_losses, test_psnrs = test_autorreg_epoch(model, seq_model, test_data_loader, device, lengths_to_test=args.lengths_to_test)
 
             # test_losses and test_psnrs are dicts with keys = lengths_to_test (scalars), and (scalar) values = average loss/psnr across batches
@@ -122,13 +128,14 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="/home/gperezsantamaria/autoregressive_difussion/configs/stable-diffusion/v2-inference_gen_dataset.yaml", help="Path to the configuration file.")
     parser.add_argument("--freeze", action="store_true",default=False, help="Freeze Llama backbone")
     parser.add_argument("--residual", action="store_true",default=False, help="Do a residual conncetion between the input latent and the prediciton of the linear adapted llama")
+    parser.add_argument("--prompt_appended", action="store_true",default=False, help="Wether to tokenize the corresponding prompt (caption) for every image and append it to the input sequence")
     parser.add_argument("--epochs", type=int, default=200, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training.")
     parser.add_argument("--lr", type=float, default=0.01, help="Learning rate.")
-    parser.add_argument("--n_files", type=int, default=1, help="Number of files to use for training.")
+    parser.add_argument("--n_files", type=int, default=5, help="Number of files to use for training.")
     parser.add_argument("--train_percentage", type=float, default=0.8, help="Percentage of data to use for training.")
     parser.add_argument("--debug", action="store_true", help="Debug mode.")
-    parser.add_argument("--lengths_to_test", type=int, nargs='+', default=[1, 5, 10, 15, 17, 19, 20], help="Lengths to test for autorregressive prediction.")
+    parser.add_argument("--lengths_to_test", type=int, nargs='+', default=[1, 5, 10, 15, 17, 20], help="Lengths to test for autorregressive prediction.")
     parser.add_argument("--ar_eval_freq", type=int, default=50, help="Frequency (in epochs) at which to evaluate autorregressive prediction.")
     parser.add_argument("--superv_iters", type=int, default=1, help="Number of supervised iterations (from this number on, i.e. N=15 will supervise predictions 15, 16, ... until the end).")
     args = parser.parse_args()
