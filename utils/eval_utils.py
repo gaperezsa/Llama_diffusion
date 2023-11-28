@@ -35,7 +35,7 @@ def predict_autorreg(Llama_model, X, gt_length, prompts=None):
     input_seq = torch.cat((input_seq,new_pred), dim=1)  # Update the latent vector with predicted values
     # (Auto-regressively) Predict until last vectors
     for _ in range(gt_length, X.size(1)):
-        pred = Llama_model(pred) # pred all timesteps in seq. Shape is [bs, gt_length, feats_dim]
+        pred = Llama_model(input_seq, prompts) # pred all timesteps in seq. Shape is [bs, gt_length, feats_dim]
         new_pred = pred[:, -1] # Shape is [bs, 1, feats_dim]
         new_pred = new_pred[:,None,:]
         input_seq = torch.cat((input_seq,new_pred), dim=1)  # Update the latent vector with predicted values
@@ -49,7 +49,14 @@ def test_autorreg_epoch(Llama_model, diff_model, data_loader, device, lengths_to
     diff_model.eval()
     psnrs = [] # list of dicts, one for each batch. Each dict has keys = lengths_to_test, and values = list of psnrs for each sample in batch
     losses = []
+    iter = 0
     for X, y, cond, prompts in tqdm(data_loader):
+        # Testing takes too long, lets just do it for a eighth of the data
+        
+        if iter%2 != 0:
+            iter = iter+1
+            continue
+        iter = iter+1
         # Compute gt images of this batch
         X, y, cond = X.to(device), y.to(device), cond.to(device)
         y = y[:, -1]
@@ -74,13 +81,13 @@ def test_autorreg_epoch(Llama_model, diff_model, data_loader, device, lengths_to
         psnrs.append(batch_psnrs)
         losses.append(batch_losses)
 
-    # Now we want to return a dict with keys = lengths_to_test, and values = average psnr across batches
+    # Now we want to return a dict with keys = lengths_to_test, and values = average psnr across batches1
     psnrs = { gt_length : torch.cat([batch_psnrs[gt_length] for batch_psnrs in psnrs], dim=0).mean().item() for gt_length in lengths_to_test }
     losses = { gt_length : torch.cat([batch_losses[gt_length] for batch_losses in losses], dim=0).mean().item() for gt_length in lengths_to_test }
     
     return losses, psnrs
 
-def visualize_reconstruction(Llama_model, diff_model, test_data_loader, gt_length=20, sample_ids=[0, 1, 2, 3, 4, 5], append_prompt=False):
+def visualize_reconstruction(Llama_model, diff_model, test_data_loader, gt_length=20, sample_ids=[0, 1, 2, 3], append_prompt=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     all_gt_imgs = []
@@ -128,7 +135,7 @@ def visualize_reconstruction(Llama_model, diff_model, test_data_loader, gt_lengt
     return images
 
 
-def visualize_mid_latents(Llama_model, diff_model, test_data_loader, num_initial_steps=20, sample_ids=[0, 1, 2, 3, 4, 5], append_prompt=False):
+def visualize_mid_latents(Llama_model, diff_model, test_data_loader, num_initial_steps=20, sample_ids=[0, 1, 2, 3], append_prompt=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     all_gt_imgs = []

@@ -63,16 +63,16 @@ def main(args):
 
     # Create dataloaders
     train_data_loader, val_data_loader, test_data_loader = data_loading.get_dataloaders(all_xs, all_prompts, all_conditions, args.train_percentage, args.batch_size)
-    visual_train_data_loader, visual_val_data_loader, visual_test_data_loader = data_loading.get_dataloaders(all_xs, all_prompts, all_conditions, args.train_percentage, args.batch_size//4)
+    visual_train_data_loader, visual_val_data_loader, visual_test_data_loader = data_loading.get_dataloaders(all_xs, all_prompts, all_conditions, args.train_percentage, (args.batch_size//4)+1)
 
 
     # Load Llama and tokenizer
-    llama_model = model.LinearAdaptedLlama(llama_weights_path = "/home/gperezsantamaria/local_data/autoregressive_difussion/Llama_playground/Llama_weights/Llama-2-7b", freeze=args.freeze, residual_connection=args.residual).to(device)
+    llama_model = model.LinearAdaptedLlama(llama_weights_path = "/home/gperezsantamaria/local_data/autoregressive_difussion/Llama_playground/Llama_weights/Llama-2-7b",tokenizer_max_length = args.tokenizer_max_length, freeze=args.freeze, normal_layers_finetuning = args.normal_layers_finetuning, residual_connection=args.residual, internal_latent_residual_connection = args.internal_latent_residual).to(device)
 
     # Log model size to wandb
     param_count = sum(p.numel() for p in llama_model.parameters() if p.requires_grad)
-    print(f"Llama model size: {param_count}")
-    wandb.log({"Llama model_size": param_count})
+    print(f"Linearly adapted Llama model size: {param_count}")
+    wandb.log({"Linearly adapted Llama model_size": param_count})
 
     # Training set_up
     params_to_optimize = filter(lambda p: p.requires_grad, llama_model.parameters())
@@ -103,10 +103,14 @@ def main(args):
         if (epoch % args.ar_eval_freq == 0) or (epoch+1 == args.epochs): 
             # Visualization after each epoch
             for gt_length in tqdm(args.lengths_to_test, desc="Reconstructing and visualizing"):
-                images = eval_utils.visualize_reconstruction(llama_model, diff_model, visual_val_data_loader, gt_length=gt_length, append_prompt=args.prompt_appended)
-                wandb.log({f"reconstruction_gt{gt_length}": images})
-                mid_images = eval_utils.visualize_mid_latents(llama_model, diff_model, visual_val_data_loader,gt_length)
-                wandb.log({f"reconstruction with access to {gt_length}gt, predicting {gt_length+1}": mid_images})
+                eval_images = eval_utils.visualize_reconstruction(llama_model, diff_model, visual_val_data_loader, gt_length=gt_length, append_prompt=args.prompt_appended)
+                wandb.log({f"eval_reconstruction_gt{gt_length}": eval_images})
+                train_images = eval_utils.visualize_reconstruction(llama_model, diff_model, visual_train_data_loader, gt_length=gt_length, append_prompt=args.prompt_appended)
+                wandb.log({f"train_reconstruction_gt{gt_length}": train_images})
+                eval_mid_images = eval_utils.visualize_mid_latents(llama_model, diff_model, visual_val_data_loader,gt_length)
+                wandb.log({f"eval_reconstruction with access to {gt_length}gt, predicting {gt_length+1}": eval_mid_images})
+                train_mid_images = eval_utils.visualize_mid_latents(llama_model, diff_model, visual_train_data_loader,gt_length)
+                wandb.log({f"train_reconstruction with access to {gt_length}gt, predicting {gt_length+1}": train_mid_images})
 
             # Compute error and PSNR when generating autorregressively
             train_losses, train_psnrs = eval_utils.test_autorreg_epoch(llama_model, diff_model, visual_train_data_loader, device, lengths_to_test=args.lengths_to_test, append_prompt=args.prompt_appended)
@@ -127,16 +131,19 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt", type=str, default="/home/gperezsantamaria/autoregressive_difussion/Weights/v2-1_512-ema-pruned.ckpt", help="Path to the checkpoint file.")
     parser.add_argument("--config", type=str, default="/home/gperezsantamaria/autoregressive_difussion/configs/stable-diffusion/v2-inference_gen_dataset.yaml", help="Path to the configuration file.")
     parser.add_argument("--freeze", action="store_true",default=False, help="Freeze Llama backbone")
+    parser.add_argument("--normal_layers_finetuning", action="store_true",default=False, help="Unfreeze only normalization layers of Llama backbone")
     parser.add_argument("--residual", action="store_true",default=False, help="Do a residual conncetion between the input latent and the prediciton of the linear adapted llama")
+    parser.add_argument("--internal_latent_residual", action="store_true",default=False, help="Do a residual conncetion between the input latent and the prediciton of the linear adapted llama")
     parser.add_argument("--prompt_appended", action="store_true",default=False, help="Wether to tokenize the corresponding prompt (caption) for every image and append it to the input sequence")
+    parser.add_argument("--tokenizer_max_length", type=int, default=20, help="If prompts are to be prepended, what is the standardized length of tokens per batch")
     parser.add_argument("--epochs", type=int, default=200, help="Number of training epochs.")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training.")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training.")
     parser.add_argument("--lr", type=float, default=0.01, help="Learning rate.")
-    parser.add_argument("--n_files", type=int, default=5, help="Number of files to use for training.")
+    parser.add_argument("--n_files", type=int, default=1, help="Number of files to use for training.")
     parser.add_argument("--train_percentage", type=float, default=0.8, help="Percentage of data to use for training.")
     parser.add_argument("--debug", action="store_true", help="Debug mode.")
-    parser.add_argument("--lengths_to_test", type=int, nargs='+', default=[1, 5, 10, 15, 17, 20], help="Lengths to test for autorregressive prediction.")
+    parser.add_argument("--lengths_to_test", type=int, nargs='+', default=[10, 15, 17], help="Lengths to test for autorregressive prediction.")
     parser.add_argument("--ar_eval_freq", type=int, default=50, help="Frequency (in epochs) at which to evaluate autorregressive prediction.")
-    parser.add_argument("--superv_iters", type=int, default=1, help="Number of supervised iterations (from this number on, i.e. N=15 will supervise predictions 15, 16, ... until the end).")
+    parser.add_argument("--superv_iters", type=int, default=0, help="Number of supervised iterations (from this number on, i.e. N=15 will supervise predictions 15, 16, ... until the end).")
     args = parser.parse_args()
     main(args)

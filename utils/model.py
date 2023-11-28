@@ -19,9 +19,17 @@ def freeze_llama_model_parameters(llama_model):
     for param in llama_model.parameters():
         param.requires_grad = False
 
+def unfreeze_norm_layers(llama_model):
+    for i in range(len(llama_model._modules["model"].layers)):
+        for param in llama_model._modules["model"].layers[i].input_layernorm.parameters():
+            param.requires_grad = True
+        for param in llama_model._modules["model"].layers[i].post_attention_layernorm.parameters():
+            param.requires_grad = True
+        for param in llama_model._modules["model"].norm.parameters():
+            param.requires_grad = True
 
 class LinearAdaptedLlama(nn.Module):
-    def __init__(self, llama_weights_path, llama_model=None, tokenizer=None, input_dim=16384, output_dim=16384, hidden_dim=4096, tokenizer_max_length=20, freeze=False, residual_connection=False):
+    def __init__(self, llama_weights_path, llama_model=None, tokenizer=None, input_dim=16384, output_dim=16384, hidden_dim=4096, tokenizer_max_length=20, freeze=False, normal_layers_finetuning=False, residual_connection=False, internal_latent_residual_connection =False):
         super(LinearAdaptedLlama, self).__init__()
         
         # Initialize the Llama model
@@ -42,13 +50,29 @@ class LinearAdaptedLlama(nn.Module):
         self.tokenizer.padding_side = "right"
         self.tokenizer.pad_token = self.tokenizer.unk_token
 
+        # Log model size
+        param_count = sum(p.numel() for p in self.llama_model.parameters() if p.requires_grad)
+        print(f"loaded Llama model size: {param_count}")
+
         if freeze:
             # Freeze Llama model parameters
             freeze_llama_model_parameters(self.llama_model)
 
+        # Log model size
+        param_count = sum(p.numel() for p in self.llama_model.parameters() if p.requires_grad)
+        print(f"Llama model size after parameter freezing: {param_count}")
+
+        if normal_layers_finetuning:
+            unfreeze_norm_layers(self.llama_model)
+
+        # Log model size
+        param_count = sum(p.numel() for p in self.llama_model.parameters() if p.requires_grad)
+        print(f"Llama model size after norm layers unfreezing: {param_count}")
+
         self.residual_connection_flag = residual_connection
 
-        
+        self.internal_latent_residual_connection_flag = internal_latent_residual_connection
+
         # MLP for adapting the input to Llama's input dimension
         self.input_mlp = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -71,7 +95,15 @@ class LinearAdaptedLlama(nn.Module):
         # Check if prompt tokenizing is necessary
         if prompts is not None:
             # Use tokenizer and extract ids and attention masks
-            batch_tokens = [(self.tokenizer(prompt, padding='max_length', truncation = True, max_length=self.tokenizer_max_length, return_tensors="pt").to(device)) for prompt in prompts]
+            # Better to check if its a list perhaps
+            if len(prompts) != x.shape[0] and x.shape[0] == 1:
+                # This means only a single prompt was sent. most likely evaluation or visualization purposes. 
+                # Then we shouldnt iterate over it
+                prompt = prompts
+                batch_tokens = [(self.tokenizer(prompt, padding='max_length', truncation = True, max_length=self.tokenizer_max_length, return_tensors="pt").to(device))]
+            else:
+                batch_tokens = [(self.tokenizer(prompt, padding='max_length', truncation = True, max_length=self.tokenizer_max_length, return_tensors="pt").to(device)) for prompt in prompts]
+
             batch_tokens_ids = [batch_tokens_i['input_ids'] for batch_tokens_i in batch_tokens]
 
             # Attention mask such that padded token are ignored. Ones are added after truncation such that the latents are taken attended to
@@ -99,15 +131,18 @@ class LinearAdaptedLlama(nn.Module):
 
         # Get the hidden states from the last layer
         last_hidden_state = outputs.hidden_states[-1]
+
+        #keep the last {seq_length} outputs of the model forward pass if the beggining were prompts
+        if prompts is not None:
+            last_hidden_state = last_hidden_state[:,-x.shape[1]:]
+
+        if self.internal_latent_residual_connection_flag:
+            last_hidden_state = last_hidden_state + latent_input_embedding
     
         # Adapt the output
         out = self.output_mlp(last_hidden_state)
 
-        #keep the last {seq_length} outputs of the model forward pass if the beggining were prompts
-        if prompts is not None:
-            out = out[:,-x.shape[1]:]
-
-
+        
         # If flag is activated it means we are calculating delta for every diffusion step rather than the next latent directly
         if self.residual_connection_flag:
             out = out + x
