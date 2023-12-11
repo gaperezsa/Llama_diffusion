@@ -7,6 +7,7 @@
 /ldm/data/
 /ldm/models/
 /ldm/modules/
+/pre_trained_weights/
 
 # Pychache
 /ldm/__pycache__/

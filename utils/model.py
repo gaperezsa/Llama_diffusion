@@ -29,7 +29,20 @@ def unfreeze_norm_layers(llama_model):
             param.requires_grad = True
 
 class LinearAdaptedLlama(nn.Module):
-    def __init__(self, llama_weights_path, llama_model=None, tokenizer=None, input_dim=16384, output_dim=16384, hidden_dim=4096, tokenizer_max_length=20, freeze=False, normal_layers_finetuning=False, residual_connection=False, internal_latent_residual_connection =False):
+    def __init__(self,
+                llama_weights_path,
+                llama_model=None,
+                tokenizer=None, 
+                input_dim=16384, 
+                output_dim=16384, 
+                hidden_dim=4096, 
+                tokenizer_max_length=20, 
+                freeze=False, 
+                normal_layers_finetuning=False, 
+                residual_connection=False, 
+                debugging_residual_connection=False, 
+                internal_latent_residual_connection =False
+                ):
         super(LinearAdaptedLlama, self).__init__()
         
         # Initialize the Llama model
@@ -69,9 +82,10 @@ class LinearAdaptedLlama(nn.Module):
         param_count = sum(p.numel() for p in self.llama_model.parameters() if p.requires_grad)
         print(f"Llama model size after norm layers unfreezing: {param_count}")
 
-        self.residual_connection_flag = residual_connection
-
-        self.internal_latent_residual_connection_flag = internal_latent_residual_connection
+        # Set all kind of residual connection flags
+        self.residual_connection_flag                   = residual_connection
+        self.internal_latent_residual_connection_flag   = internal_latent_residual_connection
+        self.debugging_residual_connection_flag              = debugging_residual_connection
 
         # MLP for adapting the input to Llama's input dimension
         self.input_mlp = nn.Sequential(
@@ -144,7 +158,9 @@ class LinearAdaptedLlama(nn.Module):
 
         
         # If flag is activated it means we are calculating delta for every diffusion step rather than the next latent directly
-        if self.residual_connection_flag:
+        if self.debugging_residual_connection_flag and not self.training:
+            return out
+        elif self.residual_connection_flag or self.debugging_residual_connection_flag:
             out = out + x
         
         return out

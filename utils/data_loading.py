@@ -6,10 +6,10 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset, Dataset
 
 # Constants
-SAMPLES_DIR = 'outputs_dataset/txt2img-samples/intermediate_results'
+SAMPLES_DIR = '/home/gperezsantamaria/autoregressive_difussion/FastDiffusion-AutoReg/outputs_datasetV2/txt2img-samples/intermediate_results'
 SAMPLES_TEMPLATE = 'chunk_*_batch_*_x.npy'
 
-CONDS_DIR = 'outputs_dataset/txt2img-samples/conditions'
+CONDS_DIR = '/home/gperezsantamaria/autoregressive_difussion/FastDiffusion-AutoReg/outputs_datasetV2/txt2img-samples/conditions'
 CONDS_TEMPLATE = 'chunk_*_batch_*.npy'
 
 

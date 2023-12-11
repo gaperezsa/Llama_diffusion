@@ -29,14 +29,26 @@ def predict_autorreg(Llama_model, X, gt_length, prompts=None):
     # Get the ground truth portion of the sequence
     input_seq = X[:, :gt_length] # first gt_length vectors in seq. Shape is [bs, gt_length, feats_dim]
     pred = Llama_model(input_seq, prompts)
+
     # Only care about the last prediction
-    new_pred = pred[:, -1] # Shape is [bs, 1, feats_dim]
+    # In case we are debugging the residual connection, we are going to add the predicted noise by the model to the corresponding ground truth intead of its last prediction
+    if  Llama_model.debugging_residual_connection_flag and not Llama_model.training :
+        new_pred = pred[:, -1] + X[:, gt_length-1]# Shape is [bs, 1, feats_dim]
+    else:
+        new_pred = pred[:, -1] # Shape is [bs, 1, feats_dim]
+
     new_pred = new_pred[:,None,:]
     input_seq = torch.cat((input_seq,new_pred), dim=1)  # Update the latent vector with predicted values
     # (Auto-regressively) Predict until last vectors
-    for _ in range(gt_length, X.size(1)):
+    for i in range(gt_length, X.size(1)):
         pred = Llama_model(input_seq, prompts) # pred all timesteps in seq. Shape is [bs, gt_length, feats_dim]
-        new_pred = pred[:, -1] # Shape is [bs, 1, feats_dim]
+
+        # In case we are debugging the residual connection, we are going to add the predicted noise by the model to the corresponding ground truth instead of its own last prediction
+        if  Llama_model.debugging_residual_connection_flag and not Llama_model.training :
+            new_pred = pred[:, -1] + X[:, i]# Shape is [bs, 1, feats_dim]
+        else:
+            new_pred = pred[:, -1] # Shape is [bs, 1, feats_dim]
+
         new_pred = new_pred[:,None,:]
         input_seq = torch.cat((input_seq,new_pred), dim=1)  # Update the latent vector with predicted values
 
@@ -47,13 +59,14 @@ def predict_autorreg(Llama_model, X, gt_length, prompts=None):
 @torch.no_grad()
 def test_autorreg_epoch(Llama_model, diff_model, data_loader, device, lengths_to_test=[1, 5, 10, 20], append_prompt=False):
     diff_model.eval()
+    Llama_model.eval()
     psnrs = [] # list of dicts, one for each batch. Each dict has keys = lengths_to_test, and values = list of psnrs for each sample in batch
     losses = []
     iter = 0
     for X, y, cond, prompts in tqdm(data_loader):
-        # Testing takes too long, lets just do it for a eighth of the data
+        # Testing takes too long, lets just do it for a tenth of the data
         
-        if iter%2 != 0:
+        if iter%10 != 0:
             iter = iter+1
             continue
         iter = iter+1
@@ -88,6 +101,7 @@ def test_autorreg_epoch(Llama_model, diff_model, data_loader, device, lengths_to
     return losses, psnrs
 
 def visualize_reconstruction(Llama_model, diff_model, test_data_loader, gt_length=20, sample_ids=[0, 1, 2, 3], append_prompt=False):
+    Llama_model.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     all_gt_imgs = []
@@ -136,6 +150,7 @@ def visualize_reconstruction(Llama_model, diff_model, test_data_loader, gt_lengt
 
 
 def visualize_mid_latents(Llama_model, diff_model, test_data_loader, num_initial_steps=20, sample_ids=[0, 1, 2, 3], append_prompt=False):
+    Llama_model.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     all_gt_imgs = []

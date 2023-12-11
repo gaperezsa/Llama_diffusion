@@ -67,7 +67,7 @@ def main(args):
 
 
     # Load Llama and tokenizer
-    llama_model = model.LinearAdaptedLlama(llama_weights_path = "/home/gperezsantamaria/local_data/autoregressive_difussion/Llama_playground/Llama_weights/Llama-2-7b",tokenizer_max_length = args.tokenizer_max_length, freeze=args.freeze, normal_layers_finetuning = args.normal_layers_finetuning, residual_connection=args.residual, internal_latent_residual_connection = args.internal_latent_residual).to(device)
+    llama_model = model.LinearAdaptedLlama(llama_weights_path = "/home/gperezsantamaria/local_data/autoregressive_difussion/Llama_playground/Llama_weights/Llama-2-7b",tokenizer_max_length = args.tokenizer_max_length, freeze=args.freeze, normal_layers_finetuning = args.normal_layers_finetuning, residual_connection=args.residual, internal_latent_residual_connection = args.internal_latent_residual,debugging_residual_connection=args.debugging_residual_connection).to(device)
 
     # Log model size to wandb
     param_count = sum(p.numel() for p in llama_model.parameters() if p.requires_grad)
@@ -88,7 +88,7 @@ def main(args):
         # Val and Testing
         val_loss = test_epoch(llama_model, val_data_loader, loss_function, device, append_prompt=args.prompt_appended)
         #test_loss = test_epoch(llama_model, test_data_loader, loss_function, device)
-
+        
         # Console logging
         print(f"Epoch {epoch} | Train loss: {train_loss} | Val loss: {val_loss} | Train Time: {end-start}")
 
@@ -112,6 +112,10 @@ def main(args):
                 train_mid_images = eval_utils.visualize_mid_latents(llama_model, diff_model, visual_train_data_loader,gt_length)
                 wandb.log({f"train_reconstruction with access to {gt_length}gt, predicting {gt_length+1}": train_mid_images})
 
+            if not args.residual and not args.debugging_residual_connection and not args.internal_latent_residual:
+                torch.save(llama_model.input_mlp.state_dict(), "/home/gperezsantamaria/local_data/autoregressive_difussion/Llama_playground/pre_trained_weights/input_mlp.pt")
+                torch.save(llama_model.output_mlp.state_dict(), "/home/gperezsantamaria/local_data/autoregressive_difussion/Llama_playground/pre_trained_weights/output_mlp.pt")
+
             # Compute error and PSNR when generating autorregressively
             train_losses, train_psnrs = eval_utils.test_autorreg_epoch(llama_model, diff_model, visual_train_data_loader, device, lengths_to_test=args.lengths_to_test, append_prompt=args.prompt_appended)
             val_losses, val_psnrs = eval_utils.test_autorreg_epoch(llama_model, diff_model, visual_val_data_loader, device, lengths_to_test=args.lengths_to_test, append_prompt=args.prompt_appended)
@@ -133,6 +137,7 @@ if __name__ == "__main__":
     parser.add_argument("--freeze", action="store_true",default=False, help="Freeze Llama backbone")
     parser.add_argument("--normal_layers_finetuning", action="store_true",default=False, help="Unfreeze only normalization layers of Llama backbone")
     parser.add_argument("--residual", action="store_true",default=False, help="Do a residual conncetion between the input latent and the prediciton of the linear adapted llama")
+    parser.add_argument("--debugging_residual_connection", action="store_true",default=False, help="Debug possible effects of residual connections in autoregressive predictions")
     parser.add_argument("--internal_latent_residual", action="store_true",default=False, help="Do a residual conncetion between the input latent and the prediciton of the linear adapted llama")
     parser.add_argument("--prompt_appended", action="store_true",default=False, help="Wether to tokenize the corresponding prompt (caption) for every image and append it to the input sequence")
     parser.add_argument("--tokenizer_max_length", type=int, default=20, help="If prompts are to be prepended, what is the standardized length of tokens per batch")
