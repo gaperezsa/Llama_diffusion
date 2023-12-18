@@ -148,6 +148,59 @@ def visualize_reconstruction(Llama_model, diff_model, test_data_loader, gt_lengt
     
     return images
 
+def non_autoregressive_visualize_reconstruction(Llama_model, diff_model, test_data_loader, training_gts = 10, target_gt = 20, sample_ids=[0, 1, 2, 3], append_prompt=False):
+    Llama_model.eval()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    all_gt_imgs = []
+    all_pred_imgs = []
+    captions = []
+    
+    # Iterate over sample_ids
+    for sample_id in sample_ids:
+        # Extract sample `sample_id` from test data loader
+        X, y, cond, prompts = test_data_loader.dataset[sample_id]
+        X, cond = X.unsqueeze(0).to(device), cond.unsqueeze(0).to(device)
+
+        if target_gt < X.shape[1]:
+            X, y, cond = X[:,:training_gts].to(device), X[target_gt].to(device), cond.to(device)
+        else:
+            X, y, cond = X[:,:training_gts].to(device), y[-1].to(device), cond.to(device)
+        
+        gt_img = diffusion_model.to_img(diff_model, y.view(1, 4, 64, 64).to(device))
+
+        if append_prompt:
+            prediction = Llama_model(X[:, :training_gts], prompts)[:, -1]
+        else:
+            prediction = Llama_model(X[:, :training_gts])[:, -1]
+        reshaped_latent = prediction.view(1, 4, 64, 64).to(device)
+        pred_img = diffusion_model.to_img(diff_model, reshaped_latent)
+        
+        # Downsample imagespreds
+        gt_img_downsampled = downsample_image(gt_img[0])
+        pred_img_downsampled = downsample_image(pred_img[0])
+        
+        # Store images for later concatenation
+        all_gt_imgs.append(gt_img_downsampled)
+        all_pred_imgs.append(pred_img_downsampled)
+        
+        # Construct caption and append
+        captions.append(f"Prompt: {prompts} | Top: Ground Truth, Bottom: Predicted")
+    
+    # Concatenate ground truth and predicted images vertically for each sample
+    # Then concatenate the results horizontally to form the grid
+    combined_images = np.concatenate(
+        [np.concatenate([gt, pred], axis=0) for gt, pred in zip(all_gt_imgs, all_pred_imgs)], 
+        axis=1
+    )
+
+    # Join all the captions into one
+    full_caption = " || ".join(captions)
+
+    images = wandb.Image(combined_images, caption=full_caption)
+    
+    return images
+
 
 def visualize_mid_latents(Llama_model, diff_model, test_data_loader, num_initial_steps=20, sample_ids=[0, 1, 2, 3], append_prompt=False):
     Llama_model.eval()

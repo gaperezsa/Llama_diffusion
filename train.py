@@ -46,6 +46,55 @@ def test_epoch(model, data_loader, loss_function, device, append_prompt=False):
 
 
 
+###### Non autoregressive Train and Testing epochs ######
+
+@torch.enable_grad()
+def non_autoregressive_train_epoch(model, data_loader, optimizer, loss_function, device, append_prompt=False, training_gts=10, target_gt=20):
+    model.train()
+    total_loss = 0
+    for X, y, cond, prompts in tqdm(data_loader, desc="Training", unit="batch"):
+
+        if target_gt < X.shape[1]:
+            X, y, cond = X[:,:training_gts].to(device), X[:,target_gt].to(device), cond.to(device)
+        else:
+            X, y, cond = X[:,:training_gts].to(device), y[:,-1].to(device), cond.to(device)
+        
+        optimizer.zero_grad()
+            
+        if append_prompt:
+            prediction = model(X, prompts)[:, -1]
+        else:
+            prediction = model(X)[:, -1]
+        
+        loss = loss_function(prediction, y)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+    return total_loss / len(data_loader)
+
+
+@torch.no_grad()
+def non_autoregressive_test_epoch(model, data_loader, loss_function, device, append_prompt=False, training_gts=10, target_gt=20):
+    model.eval()
+    total_loss = 0
+    for X, y, cond, prompts in tqdm(data_loader, desc="Testing", unit="batch"):
+        if target_gt < X.shape[1]:
+            X, y, cond = X[:,:training_gts].to(device), X[:,target_gt].to(device), cond.to(device)
+        else:
+            X, y, cond = X[:,:training_gts].to(device), y[:,-1].to(device), cond.to(device)
+        
+        if append_prompt:
+            prediction = model(X, prompts)[:, -1]
+        else:
+            prediction = model(X)[:, -1]
+        loss = loss_function(prediction, y)
+        total_loss += loss.item()
+    
+    return total_loss / len(data_loader)
+
+
+
+
 #### Main pipeline ####
 
 def main(args):
@@ -67,7 +116,15 @@ def main(args):
 
 
     # Load Llama and tokenizer
-    llama_model = model.LinearAdaptedLlama(llama_weights_path = "/home/gperezsantamaria/local_data/autoregressive_difussion/Llama_playground/Llama_weights/Llama-2-7b",tokenizer_max_length = args.tokenizer_max_length, freeze=args.freeze, normal_layers_finetuning = args.normal_layers_finetuning, residual_connection=args.residual, internal_latent_residual_connection = args.internal_latent_residual,debugging_residual_connection=args.debugging_residual_connection).to(device)
+    llama_model = model.LinearAdaptedLlama(
+                                        llama_weights_path = "/home/gperezsantamaria/local_data/autoregressive_difussion/Llama_playground/Llama_weights/Llama-2-7b",
+                                        tokenizer_max_length = args.tokenizer_max_length, 
+                                        freeze = args.freeze, 
+                                        normal_layers_finetuning = args.normal_layers_finetuning, 
+                                        residual_connection = args.residual, 
+                                        internal_latent_residual_connection = args.internal_latent_residual,
+                                        debugging_residual_connection = args.debugging_residual_connection,
+                                        ).to(device)
 
     # Log model size to wandb
     param_count = sum(p.numel() for p in llama_model.parameters() if p.requires_grad)
@@ -82,12 +139,21 @@ def main(args):
     for epoch in range(args.epochs):
         # Training
         start = time.time()
-        train_loss = train_epoch(llama_model, train_data_loader, optimizer, loss_function, device, superv_iters=args.superv_iters, append_prompt=args.prompt_appended)
+        if args.not_autoregressive:
+            train_loss = non_autoregressive_train_epoch(llama_model, train_data_loader, optimizer, loss_function, device, append_prompt=args.prompt_appended, training_gts = args.training_gts, target_gt = args.target_gt)
+        else:
+            train_loss = train_epoch(llama_model, train_data_loader, optimizer, loss_function, device, superv_iters=args.superv_iters, append_prompt=args.prompt_appended)
+            
         end = time.time()
 
         # Val and Testing
-        val_loss = test_epoch(llama_model, val_data_loader, loss_function, device, append_prompt=args.prompt_appended)
+        if args.not_autoregressive:
+            val_loss = non_autoregressive_test_epoch(llama_model, val_data_loader, loss_function, device, append_prompt=args.prompt_appended, training_gts = args.training_gts, target_gt = args.target_gt)
+        else:
+            val_loss = test_epoch(llama_model, val_data_loader, loss_function, device, append_prompt=args.prompt_appended)
+            
         #test_loss = test_epoch(llama_model, test_data_loader, loss_function, device)
+        
         
         # Console logging
         print(f"Epoch {epoch} | Train loss: {train_loss} | Val loss: {val_loss} | Train Time: {end-start}")
@@ -99,18 +165,28 @@ def main(args):
             # "test_loss": test_loss
         })
 
-        # Evaluate
+        # Evaluate and visualize
         if (epoch % args.ar_eval_freq == 0) or (epoch+1 == args.epochs): 
-            # Visualization after each epoch
-            for gt_length in tqdm(args.lengths_to_test, desc="Reconstructing and visualizing"):
-                eval_images = eval_utils.visualize_reconstruction(llama_model, diff_model, visual_val_data_loader, gt_length=gt_length, append_prompt=args.prompt_appended)
-                wandb.log({f"eval_reconstruction_gt{gt_length}": eval_images})
-                train_images = eval_utils.visualize_reconstruction(llama_model, diff_model, visual_train_data_loader, gt_length=gt_length, append_prompt=args.prompt_appended)
-                wandb.log({f"train_reconstruction_gt{gt_length}": train_images})
-                eval_mid_images = eval_utils.visualize_mid_latents(llama_model, diff_model, visual_val_data_loader,gt_length)
-                wandb.log({f"eval_reconstruction with access to {gt_length}gt, predicting {gt_length+1}": eval_mid_images})
-                train_mid_images = eval_utils.visualize_mid_latents(llama_model, diff_model, visual_train_data_loader,gt_length)
-                wandb.log({f"train_reconstruction with access to {gt_length}gt, predicting {gt_length+1}": train_mid_images})
+
+            if args.not_autoregressive:
+                eval_images = eval_utils.non_autoregressive_visualize_reconstruction(llama_model, diff_model, visual_val_data_loader, training_gts = args.training_gts, target_gt = args.target_gt, append_prompt = args.prompt_appended)
+                wandb.log({f"eval_reconstruction_gt{args.training_gts} not ag jumping to gt{args.target_gt}": eval_images})
+
+                train_images = eval_utils.non_autoregressive_visualize_reconstruction(llama_model, diff_model, visual_train_data_loader, training_gts = args.training_gts, target_gt = args.target_gt, append_prompt = args.prompt_appended)
+                wandb.log({f"train_reconstruction_gt{args.training_gts} not ag jumping to gt{args.target_gt}": train_images})
+            else:
+                for gt_length in tqdm(args.lengths_to_test, desc="Reconstructing and visualizing"):
+                    eval_images = eval_utils.visualize_reconstruction(llama_model, diff_model, visual_val_data_loader, gt_length=gt_length, append_prompt=args.prompt_appended)
+                    wandb.log({f"eval_reconstruction_gt{gt_length}": eval_images})
+                    
+                    train_images = eval_utils.visualize_reconstruction(llama_model, diff_model, visual_train_data_loader, gt_length=gt_length, append_prompt=args.prompt_appended)
+                    wandb.log({f"train_reconstruction_gt{gt_length}": train_images})
+                    
+                    eval_mid_images = eval_utils.visualize_mid_latents(llama_model, diff_model, visual_val_data_loader,gt_length)
+                    wandb.log({f"eval_reconstruction with access to {gt_length}gt, predicting {gt_length+1}": eval_mid_images})
+                    
+                    train_mid_images = eval_utils.visualize_mid_latents(llama_model, diff_model, visual_train_data_loader,gt_length)
+                    wandb.log({f"train_reconstruction with access to {gt_length}gt, predicting {gt_length+1}": train_mid_images})
 
             if not args.residual and not args.debugging_residual_connection and not args.internal_latent_residual:
                 torch.save(llama_model.input_mlp.state_dict(), "/home/gperezsantamaria/local_data/autoregressive_difussion/Llama_playground/pre_trained_weights/input_mlp.pt")
@@ -141,10 +217,13 @@ if __name__ == "__main__":
     parser.add_argument("--internal_latent_residual", action="store_true",default=False, help="Do a residual conncetion between the input latent and the prediciton of the linear adapted llama")
     parser.add_argument("--prompt_appended", action="store_true",default=False, help="Wether to tokenize the corresponding prompt (caption) for every image and append it to the input sequence")
     parser.add_argument("--tokenizer_max_length", type=int, default=20, help="If prompts are to be prepended, what is the standardized length of tokens per batch")
+    parser.add_argument("--not_autoregressive", action="store_true", default=False, help="train with a set amount of the gts and directly predict a particular target gt as the next token in sequence")
+    parser.add_argument("--training_gts", type=int, default=10, help="when not being autoregressive, how many training gts to be taken into account")
+    parser.add_argument("--target_gt", type=int, default=20, help="when not being autoregressive, what is the target gt to predict as the next in sequence?")
     parser.add_argument("--epochs", type=int, default=200, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training.")
     parser.add_argument("--lr", type=float, default=0.01, help="Learning rate.")
-    parser.add_argument("--n_files", type=int, default=1, help="Number of files to use for training.")
+    parser.add_argument("--n_files", type=int, default=2, help="Number of files to use for training.")
     parser.add_argument("--train_percentage", type=float, default=0.8, help="Percentage of data to use for training.")
     parser.add_argument("--debug", action="store_true", help="Debug mode.")
     parser.add_argument("--lengths_to_test", type=int, nargs='+', default=[10, 15, 17], help="Lengths to test for autorregressive prediction.")

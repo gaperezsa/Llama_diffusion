@@ -31,17 +31,17 @@ def unfreeze_norm_layers(llama_model):
 class LinearAdaptedLlama(nn.Module):
     def __init__(self,
                 llama_weights_path,
-                llama_model=None,
-                tokenizer=None, 
-                input_dim=16384, 
-                output_dim=16384, 
-                hidden_dim=4096, 
-                tokenizer_max_length=20, 
-                freeze=False, 
-                normal_layers_finetuning=False, 
-                residual_connection=False, 
-                debugging_residual_connection=False, 
-                internal_latent_residual_connection =False
+                llama_model = None,
+                tokenizer = None, 
+                input_dim = 16384, 
+                output_dim = 16384, 
+                hidden_dim = 4096, 
+                tokenizer_max_length = 20, 
+                freeze = False, 
+                normal_layers_finetuning = False, 
+                residual_connection = False, 
+                debugging_residual_connection = False, 
+                internal_latent_residual_connection = False,
                 ):
         super(LinearAdaptedLlama, self).__init__()
         
@@ -82,10 +82,10 @@ class LinearAdaptedLlama(nn.Module):
         param_count = sum(p.numel() for p in self.llama_model.parameters() if p.requires_grad)
         print(f"Llama model size after norm layers unfreezing: {param_count}")
 
-        # Set all kind of residual connection flags
+        # Set all kind of behavioral flags
         self.residual_connection_flag                   = residual_connection
         self.internal_latent_residual_connection_flag   = internal_latent_residual_connection
-        self.debugging_residual_connection_flag              = debugging_residual_connection
+        self.debugging_residual_connection_flag         = debugging_residual_connection
 
         # MLP for adapting the input to Llama's input dimension
         self.input_mlp = nn.Sequential(
