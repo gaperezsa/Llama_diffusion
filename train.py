@@ -124,6 +124,7 @@ def main(args):
                                         residual_connection = args.residual, 
                                         internal_latent_residual_connection = args.internal_latent_residual,
                                         debugging_residual_connection = args.debugging_residual_connection,
+                                        patching = args.patching,
                                         ).to(device)
 
     # Log model size to wandb
@@ -220,6 +221,7 @@ if __name__ == "__main__":
     parser.add_argument("--not_autoregressive", action="store_true", default=False, help="train with a set amount of the gts and directly predict a particular target gt as the next token in sequence")
     parser.add_argument("--training_gts", type=int, default=10, help="when not being autoregressive, how many training gts to be taken into account")
     parser.add_argument("--target_gt", type=int, default=20, help="when not being autoregressive, what is the target gt to predict as the next in sequence?")
+    parser.add_argument("--patching", action="store_true", default=False, help="a way of lossless compression is to simply patchify the input")
     parser.add_argument("--epochs", type=int, default=200, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training.")
     parser.add_argument("--lr", type=float, default=0.01, help="Learning rate.")

@@ -42,6 +42,7 @@ class LinearAdaptedLlama(nn.Module):
                 residual_connection = False, 
                 debugging_residual_connection = False, 
                 internal_latent_residual_connection = False,
+                patching = False
                 ):
         super(LinearAdaptedLlama, self).__init__()
         
@@ -86,25 +87,47 @@ class LinearAdaptedLlama(nn.Module):
         self.residual_connection_flag                   = residual_connection
         self.internal_latent_residual_connection_flag   = internal_latent_residual_connection
         self.debugging_residual_connection_flag         = debugging_residual_connection
+        self.patching                                   = patching
 
+        
         # MLP for adapting the input to Llama's input dimension
-        self.input_mlp = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
+        if self.patching:
+            self.input_mlp = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim)
         )
-        
+        else:
+            self.input_mlp = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim)
+            )
+            
         # MLP for adapting Llama's output back to the original dimension
-        self.output_mlp = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
-        )
+        if self.patching:
+            self.output_mlp = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim)
+            )
+        else:
+            self.output_mlp = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, output_dim)
+            )
         
     def forward(self, x, prompts=None):
         
+        if self.patching:
+            num_patches = 4
+            batch_size = x.shape[0]
+            latent_dim = x.shape[-1]
+            new_latent_dim = x.shape[-1]//num_patches
+            unfolded_input = x.unfold(2,new_latent_dim,new_latent_dim)
+            input = unfolded_input.reshape(batch_size,-1,new_latent_dim)
+        else:
+            input = x
+               
         # Adapt the input
-        latent_input_embedding = self.input_mlp(x)
+        latent_input_embedding = self.input_mlp(input)
 
         # Check if prompt tokenizing is necessary
         if prompts is not None:
@@ -122,7 +145,7 @@ class LinearAdaptedLlama(nn.Module):
 
             # Attention mask such that padded token are ignored. Ones are added after truncation such that the latents are taken attended to
             batch_tokens_att_mask = torch.cat([batch_tokens_i['attention_mask'] for batch_tokens_i in batch_tokens])
-            batch_tokens_att_mask = torch.cat((batch_tokens_att_mask,torch.ones((x.shape[0],x.shape[1])).to(device) ),dim=1)
+            batch_tokens_att_mask = torch.cat((batch_tokens_att_mask,torch.ones((input.shape[0],input.shape[1])).to(device) ),dim=1)
 
             # Convert ids to Llama's input dimension
             token_input_embedding = torch.cat([self.llama_model.model.embed_tokens(tokens) for tokens in batch_tokens_ids])
@@ -149,13 +172,19 @@ class LinearAdaptedLlama(nn.Module):
         #keep the last {seq_length} outputs of the model forward pass if the beggining were prompts
         if prompts is not None:
             last_hidden_state = last_hidden_state[:,-x.shape[1]:]
-
+            
+        
         if self.internal_latent_residual_connection_flag:
             last_hidden_state = last_hidden_state + latent_input_embedding
     
         # Adapt the output
         out = self.output_mlp(last_hidden_state)
 
+        if self.patching:
+            # assert the reconstruction process is correct given that, if applied to the patchified input it should give back the initial tensor x
+            assert((input.reshape(batch_size,-1,num_patches,new_latent_dim).reshape(batch_size,-1,latent_dim) == x).all())
+            #apply the reconstruction process to the output tensor
+            out     = out.reshape(batch_size,-1,num_patches,new_latent_dim).reshape(batch_size,-1,latent_dim)
         
         # If flag is activated it means we are calculating delta for every diffusion step rather than the next latent directly
         if self.debugging_residual_connection_flag and not self.training:
