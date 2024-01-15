@@ -1,14 +1,14 @@
-/Llama_weights/Llama-2-7b
-/Llama_weights/Llama-2-13b
-/Llama_weights/Llama-2-70b
-/outputs_dataset/prompts
-/outputs_dataset/txt2img-samples
-/wandb/
-/ldm/data/
-/ldm/models/
-/ldm/modules/
-/pre_trained_weights/
+Llama_weights/Llama-2-7b
+Llama_weights/Llama-2-13b
+Llama_weights/Llama-2-70b
+outputs_dataset/prompts
+outputs_dataset/txt2img-samples
+wandb/
+ldm/data/
+ldm/models/
+ldm/modules/
+pre_trained_weights/
 
 # Pychache
-/ldm/__pycache__/
-/utils/__pycache__/
+ldm/__pycache__/
+utils/__pycache__/
